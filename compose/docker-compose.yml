@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  traefik:
+    image: "traefik:latest"
+    deploy:
+      placement:
+        constraints:
+          - "node.hostname == docker01"
+    command:
+      - "--providers.docker.endpoint=unix:///var/run/docker.sock"
+      - "--providers.docker.swarmMode=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--providers.docker.network=public-net"
+      - "--providers.docker.exposedbydefault=false"
+      - "--api.insecure=false"
+      - "--log.level=ERROR"
+    ports:
+      - "80:80"
+    labels:
+      - "traefik.docker.network=public-net"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - public-net
+      - www-net
+    dns:
+      - 127.0.0.1
+      - 100.100.100.100
+  db:
+    image: "myregistry.domain.com/redis:alpine"
+    networks:
+      - db-net
+  www:
+    image: "myregistry.domain.com/dokuwiki-www-alpine:1.4.1"
+    depends_on:
+      - php-fpm
+      - traefik
+    volumes:
+      - "nfs_dokuwiki:/var/www/html"
+      - type: volume
+        source: nfs_nginx
+        target: /etc/nginx/conf.d
+        volume:
+          nocopy: true
+    networks:
+      - php-net
+      - www-net
+    deploy:
+      mode: replicated
+      endpoint_mode: vip
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      labels:
+        - "traefik.http.services.www-service.loadbalancer.server.port=80"
+        - "traefik.http.services.www-service.loadbalancer.server.scheme=http"
+        - "traefik.docker.network=www-net"
+        - "traefik.enable=true"
+        - "traefik.http.routers.www-router.entrypoints=web"
+        - "traefik.http.routers.www-router.rule=Host(`docker01`)"
+        - "traefik.http.routers.www-router.service=www-service"
+  php-fpm:
+    image: "myregistry.domain.com/dokuwiki-php-alpine:1.5"
+    volumes:
+      - "nfs_dokuwiki:/var/www/html"
+    depends_on:
+      - db
+    networks:
+      - php-net
+      - db-net
+    deploy:
+      mode: replicated
+      endpoint_mode: vip
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+networks:
+  db-net:
+    external: true
+  php-net:
+    external: true
+  www-net:
+    external: true
+  public-net:
+    external: true
+volumes:
+  nfs_dokuwiki:
+    driver_opts:
+      type: "nfs"
+      o: "nfsvers=4,addr=docker01,nolock,soft,rw"
+      device: ":/app/dokuwiki"
+  nfs_nginx:
+    driver_opts:
+      type: "nfs"
+      o: "nfsvers=4,addr=docker01,nolock,soft,rw"
+      device: ":/app/nginx_conf.d"
